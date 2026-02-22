@@ -5,27 +5,13 @@ import fs from 'fs';
 const app = express();
 app.use(express.json());     // Accept JSON bodies
 
-const LOG_FILE = '/home/user/deploy.log';
-const PORT = 3012;
+const LOG_FILE = '/home/user/git_pipeline_deploy.log';
+const PORT = 7777;
 
 function log(msg) {
   console.log(msg)
   fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`);
 }
-
-// function runCommand(command) {
-//   return new Promise((resolve) => {
-//     exec(command, (err, stdout, stderr) => {
-//       fs.appendFileSync(LOG_FILE, stdout + stderr);
-//       if (err) {
-//         log(`❌ Error running: ${command}`);
-//         return resolve(false);
-//       }
-//       resolve(true);
-//     });
-//   });
-// }
-
 
 function runCommand(command) {
   return new Promise((resolve) => {
@@ -103,7 +89,7 @@ app.get('/', (req, res) => {
    WEBHOOK ENDPOINT
    ────────────────────────────────────────── */
 
-//http://82.25.95.117:3012/webhook/{project}
+//http://IP_ADDRESS:7777/webhook/{project}
 app.post('/webhook/:project', async (req, res) => {
   const project = req.params.project;
 
@@ -113,15 +99,6 @@ app.post('/webhook/:project', async (req, res) => {
   switch (project) {
     case 'janahanlaw':
       success = await janahanlaw();
-      break;
-    case 'reservation_dine_360':
-      success = await reservation_dine_360();
-      break;
-    case 'quantfortune':
-      success = await quantfortune();
-      break;
-    case 'quantfortune_backend':
-      success = await quantfortune_backend();
       break;
     default:
       log(`⚠️ Unknown project: ${project}`);
@@ -136,15 +113,6 @@ app.post('/webhook/:project', async (req, res) => {
   switch (project) {
     case 'janahanlaw':
       success = await janahanlaw();
-      break;
-    case 'reservation_dine_360':
-      success = await reservation_dine_360();
-      break;
-    case 'quantfortune':
-      success = await quantfortune();
-      break;
-    case 'quantfortune_backend':
-      success = await quantfortune_backend();
       break;
     default:
       log(`⚠️ Unknown project: ${project}`);
