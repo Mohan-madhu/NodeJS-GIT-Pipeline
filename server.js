@@ -46,9 +46,6 @@ export function runCommand(command, timeout = 900000) {  // 15 minute default ti
       if (isResolved) return;
       isResolved = true;
       
-      if (stdout) fs.appendFileSync(LOG_FILE, `[STDOUT]\n${stdout}\n`);
-      if (stderr) fs.appendFileSync(LOG_FILE, `[STDERR]\n${stderr}\n`);
-
       if (err) {
         log(`❌ Error running command`);
         log(`   ↳ Exit code: ${err.code}`);
@@ -59,6 +56,26 @@ export function runCommand(command, timeout = 900000) {  // 15 minute default ti
       log(`✅ Command succeeded`);
       resolve(true);
     });
+    
+    // Capture stdout in real-time
+    if (proc.stdout) {
+      proc.stdout.on('data', (data) => {
+        const lines = data.toString().split('\n').filter(line => line.trim());
+        lines.forEach(line => {
+          log(`   [OUTPUT] ${line}`);
+        });
+      });
+    }
+    
+    // Capture stderr in real-time
+    if (proc.stderr) {
+      proc.stderr.on('data', (data) => {
+        const lines = data.toString().split('\n').filter(line => line.trim());
+        lines.forEach(line => {
+          log(`   [ERROR] ${line}`);
+        });
+      });
+    }
     
     // Timeout handler
     const timeoutHandle = setTimeout(() => {
