@@ -2,6 +2,7 @@ import express from 'express';
 import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { deployments } from './deployments.js';
 
 const app = express();
 app.use(express.json());     // Accept JSON bodies
@@ -37,7 +38,7 @@ function log(msg) {
   }
 }
 
-function runCommand(command, timeout = 900000) {  // 15 minute default timeout
+export function runCommand(command, timeout = 900000) {  // 15 minute default timeout
   return new Promise((resolve) => {
     let isResolved = false;
     
@@ -122,24 +123,7 @@ async function executeDeployment(project, deployFunc) {
   }
 }
 
-// Updated janahanlaw deployment with better structure
-async function janahanlaw() {
-  const WORK_DIR = process.env.JANAHANLAW_DIR || '/home/user/web/janahanlaw.com/public_html/GIT/janahan-law';
-  const SERVICE_NAME = process.env.JANAHANLAW_SERVICE || 'Janahanlaw_Frontend';
-
-  const command = `
-    cd "${WORK_DIR}" && \
-    sudo rm -rf .next && \
-    pm2 stop "${SERVICE_NAME}" && \
-    git reset --hard HEAD && \
-    git pull --rebase && \
-    npm install && \
-    npm run build && \
-    pm2 restart "${SERVICE_NAME}"
-  `;
-  
-  return await runCommand(command);
-}
+// Deployment functions moved to deployments.js
 
 
 
@@ -186,14 +170,10 @@ app.post('/webhook/:project', async (req, res) => {
   log(`📥 Webhook received for project: ${project}`);
   
   // Validate project exists
-  let deployFunc;
-  switch (project) {
-    case 'janahanlaw':
-      deployFunc = janahanlaw;
-      break;
-    default:
-      log(`⚠️ Unknown project: ${project}`);
-      return res.status(400).json({ message: 'Unknown project: ' + project });
+  const deployFunc = deployments[project];
+  if (!deployFunc) {
+    log(`⚠️ Unknown project: ${project}`);
+    return res.status(400).json({ message: 'Unknown project: ' + project });
   }
 
   // Send immediate response to webhook provider
