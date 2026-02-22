@@ -1,48 +1,87 @@
 import express from 'express';
 import { exec } from 'child_process';
 import fs from 'fs';
+import path from 'path';
 
 const app = express();
 app.use(express.json());     // Accept JSON bodies
 
-const LOG_FILE = '/home/user/git_pipeline_deploy.log';
-const PORT = 7777;
+const LOG_FILE = process.env.LOG_FILE || '/home/user/git_pipeline_deploy.log';
+const PORT = process.env.PORT || 7777;
+const MAX_CONCURRENT_DEPLOYS = 3;
+
+// Track active deployments
+const deploymentStatus = new Map();
+let activeDeployments = 0;
 
 function log(msg) {
-  console.log(msg)
-  fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`);
+  const timestamp = new Date().toISOString();
+  const logMsg = `[${timestamp}] ${msg}`;
+  console.log(logMsg);
+  
+  // Ensure log directory exists
+  const logDir = path.dirname(LOG_FILE);
+  if (!fs.existsSync(logDir)) {
+    try {
+      fs.mkdirSync(logDir, { recursive: true });
+    } catch (e) {
+      console.error('Cannot create log directory:', e);
+      return;
+    }
+  }
+  
+  try {
+    fs.appendFileSync(LOG_FILE, `${logMsg}\n`);
+  } catch (e) {
+    console.error('Cannot write to log file:', e);
+  }
 }
 
-function runCommand(command) {
+function runCommand(command, timeout = 900000) {  // 15 minute default timeout
   return new Promise((resolve) => {
-    exec(command, { maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+    let isResolved = false;
+    
+    const proc = exec(command, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (isResolved) return;
+      isResolved = true;
+      
       if (stdout) fs.appendFileSync(LOG_FILE, `[STDOUT]\n${stdout}\n`);
       if (stderr) fs.appendFileSync(LOG_FILE, `[STDERR]\n${stderr}\n`);
 
       if (err) {
-        log(`❌ Error running: ${command}`);
+        log(`❌ Error running command`);
         log(`   ↳ Exit code: ${err.code}`);
-        log(`   ↳ Error: ${err.message}`);
+        log(`   ↳ Message: ${err.message}`);
         return resolve(false);
       }
 
-      log(`✅ Success: ${command}`);
+      log(`✅ Command succeeded`);
       resolve(true);
     });
+    
+    // Timeout handler
+    const timeoutHandle = setTimeout(() => {
+      if (!isResolved) {
+        isResolved = true;
+        proc.kill();
+        log(`⏱️ Command timed out after ${timeout}ms`);
+        resolve(false);
+      }
+    }, timeout);
+    
+    proc.on('close', () => clearTimeout(timeoutHandle));
   });
 }
 
 
-// Sample for the static served files from the npm build
-
+// Sample for the static served files from the npm build - TEMPLATE
 // async function reservation_dine_360() {
-//   const WORK_DIR = '/home/user/web/reservation.dine360.ca/dine-360-reservation';
-//   const PUBLIC_DIR = '/home/user/web/reservation.dine360.ca/public_html';
-
-//   // here we tell git to rebase local commits on top of remote
+//   const WORK_DIR = process.env.RESERVATION_DIR || '/home/user/web/reservation.dine360.ca/dine-360-reservation';
+//   const PUBLIC_DIR = process.env.RESERVATION_PUBLIC || '/home/user/web/reservation.dine360.ca/public_html';
+//
 //   const command = `
 //     cd "${WORK_DIR}" && \
-//      git reset --hard HEAD  && \
+//     git reset --hard HEAD && \
 //     git pull --rebase && \
 //     npm install && \
 //     npm run build && \
@@ -52,80 +91,146 @@ function runCommand(command) {
 // }
 
 
-// Sample for the next start and stop with pm2 and npm build
-
-// async function janahanlaw() {
-//   const WORK_DIR = '/home/user/web/janahanlaw.com/public_html/GIT/janahan-law';
-//   const PUBLIC_DIR = '/home/user/web/reservation.dine360.ca/public_html';
-
-//   // here we tell git to rebase local commits on top of remote
-//   const command = `
-//     cd "${WORK_DIR}" && \
-//      sudo rm -rf .next && \
-//     pm2 stop "Janahanlaw_Frontend" && \
-//     git reset --hard HEAD  && \
-//     git pull --rebase && \
-    
-//     npm install && \
-//     npm run build && \
-//     pm2 restart "Janahanlaw_Frontend"
-    
-//   `;
-//   return await runCommand(command);
-// }
-
-
-
-
-
-/* ──────────────────────────────────────────
-   HEALTH‑CHECK / HOME ENDPOINT
-   ────────────────────────────────────────── */
-app.get('/', (req, res) => {
-  res.status(200).json({ status: 'OK', message: 'Pipeline server is running.' });
-});
-
-/* ──────────────────────────────────────────
-   WEBHOOK ENDPOINT
-   ────────────────────────────────────────── */
-
-//http://IP_ADDRESS:7777/webhook/{project}
-app.post('/webhook/:project', async (req, res) => {
-  const project = req.params.project;
-
-  let success = false;
-  log(`📥 Webhook received for project: ${project}`);
-
-  switch (project) {
-    case 'janahanlaw':
-      success = await janahanlaw();
-      break;
-    default:
-      log(`⚠️ Unknown project: ${project}`);
-      res.status(400).json({ message: 'Unknown project: ' + project });
-      return;
+// Deployment wrapper with concurrency control and status tracking
+async function executeDeployment(project, deployFunc) {
+  if (activeDeployments >= MAX_CONCURRENT_DEPLOYS) {
+    log(`⏳ Deployment queued for ${project} (${activeDeployments}/${MAX_CONCURRENT_DEPLOYS} active)`);
   }
-
-
-  res.status(200).json({ message: 'Deploying ' + project });
-
-
-  switch (project) {
-    case 'janahanlaw':
-      success = await janahanlaw();
-      break;
-    default:
-      log(`⚠️ Unknown project: ${project}`);
-      res.status(400).json({ message: 'Unknown project: ' + project });
-      return;
+  
+  activeDeployments++;
+  deploymentStatus.set(project, { status: 'deploying', startTime: new Date() });
+  
+  try {
+    log(`🔄 Starting deployment for ${project}`);
+    const success = await deployFunc();
+    
+    if (success) {
+      deploymentStatus.set(project, { status: 'success', completedTime: new Date() });
+      log(`✅ Deploy complete for ${project}`);
+    } else {
+      deploymentStatus.set(project, { status: 'failed', completedTime: new Date() });
+      log(`❌ Deploy failed for ${project}`);
+    }
+    
+    return success;
+  } catch (error) {
+    deploymentStatus.set(project, { status: 'error', error: error.message, completedTime: new Date() });
+    log(`❌ Deployment error for ${project}: ${error.message}`);
+    return false;
+  } finally {
+    activeDeployments--;
   }
+}
 
-  if (success) log(`✅ Deploy complete for ${project}`);
-  else log(`❌ Deploy failed for ${project}`);
-});
+// Updated janahanlaw deployment with better structure
+async function janahanlaw() {
+  const WORK_DIR = process.env.JANAHANLAW_DIR || '/home/user/web/janahanlaw.com/public_html/GIT/janahan-law';
+  const SERVICE_NAME = process.env.JANAHANLAW_SERVICE || 'Janahanlaw_Frontend';
+
+  const command = `
+    cd "${WORK_DIR}" && \
+    sudo rm -rf .next && \
+    pm2 stop "${SERVICE_NAME}" && \
+    git reset --hard HEAD && \
+    git pull --rebase && \
+    npm install && \
+    npm run build && \
+    pm2 restart "${SERVICE_NAME}"
+  `;
+  
+  return await runCommand(command);
+}
+
+
+
 
 
 /* ────────────────────────────────────────── */
+app.get('/', (req, res) => {
+  res.status(200).json({ 
+    status: 'OK', 
+    message: 'Git Pipeline server is running.',
+    activeDeployments,
+    maxConcurrent: MAX_CONCURRENT_DEPLOYS
+  });
+});
+
+/* ────────────────────────────────────────── */
+// Deployment status endpoint
+app.get('/status/:project', (req, res) => {
+  const project = req.params.project;
+  const status = deploymentStatus.get(project);
+  
+  if (!status) {
+    return res.status(404).json({ message: 'No deployment history for project: ' + project });
+  }
+  
+  res.status(200).json(status);
+});
+
+/* ────────────────────────────────────────── */
+// All deployments status
+app.get('/status', (req, res) => {
+  res.status(200).json({ 
+    activeDeployments,
+    maxConcurrent: MAX_CONCURRENT_DEPLOYS,
+    recentDeployments: Object.fromEntries(deploymentStatus)
+  });
+});
+
+/* ────────────────────────────────────────── */
+// Webhook endpoint - FIXED: removed duplicate switch statement
+app.post('/webhook/:project', async (req, res) => {
+  const project = req.params.project;
+  
+  log(`📥 Webhook received for project: ${project}`);
+  
+  // Validate project exists
+  let deployFunc;
+  switch (project) {
+    case 'janahanlaw':
+      deployFunc = janahanlaw;
+      break;
+    default:
+      log(`⚠️ Unknown project: ${project}`);
+      return res.status(400).json({ message: 'Unknown project: ' + project });
+  }
+
+  // Send immediate response to webhook provider
+  res.status(202).json({ 
+    message: 'Deployment initiated for ' + project,
+    activeDeployments,
+    status: 'processing'
+  });
+
+  // Execute deployment asynchronously in background
+  executeDeployment(project, deployFunc).catch(err => {
+    log(`💥 Unhandled error in deployment: ${err.message}`);
+  });
+});
+
+/* ──────────────────────────────────────────
+   GRACEFUL SHUTDOWN
+   ────────────────────────────────────────── */
+process.on('SIGTERM', () => {
+  log('🛑 SIGTERM received, shutting down gracefully...');
+  if (activeDeployments === 0) {
+    process.exit(0);
+  } else {
+    log(`⏳ Waiting for ${activeDeployments} deployment(s) to complete...`);
+    const checkInterval = setInterval(() => {
+      if (activeDeployments === 0) {
+        clearInterval(checkInterval);
+        log('✅ All deployments complete, exiting.');
+        process.exit(0);
+      }
+    }, 1000);
+  }
+});
+
+/* ────────────────────────────────────────── */
 app.listen(PORT, () => {
-  log(`🚀 Common Webhook listening on port ${PORT}`);
+  log(`🚀 Git Pipeline server listening on port ${PORT}`);
+  log(`📝 Logs written to: ${LOG_FILE}`);
+  log(`⚙️  Max concurrent deployments: ${MAX_CONCURRENT_DEPLOYS}`);
 });
