@@ -176,3 +176,30 @@ Response (immediate):
   "status": "processing"
 }
 ```
+
+## HexTorq Console Integration
+
+The pipeline accepts optional metadata in the webhook body from the HexTorq pipeline agent:
+
+```json
+{
+  "source": "console",
+  "requestedBy": "admin@example.com",
+  "service": {
+    "projectKey": "Rathinam_CCTV_Backend",
+    "branch": "main",
+    "workingDirectory": "/home/mohan/.config/htop/mohan/SERVER/cctv-be",
+    "pm2ProcessName": "cctv-be"
+  }
+}
+```
+
+The `projectKey` still selects the deployment function in `deployments.js`. The metadata is validated against the URL project, used for deployment history metadata, and never executed as arbitrary shell input.
+
+If `CONSOLE_AGENT_URL`, `CONSOLE_AGENT_ID`, and `CONSOLE_AGENT_KEY` are configured, the pipeline posts `deployment-started`, `deployment-log`, and `deployment-completed` events to the local pipeline agent at:
+
+```text
+POST {CONSOLE_AGENT_URL}/console/events
+```
+
+The agent forwards them to the HexTorq console. The relay is optional; deployments continue normally when it is disabled.

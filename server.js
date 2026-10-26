@@ -16,18 +16,88 @@ const PORT = process.env.PORT || 9000;
 const MAX_CONCURRENT_DEPLOYS = 3;
 const MAX_PROJECT_LOG_LINES = 5000;
 
+const CONSOLE_AGENT_URL = process.env.CONSOLE_AGENT_URL?.replace(/\/$/, '');
+const CONSOLE_AGENT_ID = process.env.CONSOLE_AGENT_ID;
+const CONSOLE_AGENT_KEY = process.env.CONSOLE_AGENT_KEY;
+const CONSOLE_EVENT_RELAY_ENABLED = Boolean(
+  CONSOLE_AGENT_URL && CONSOLE_AGENT_ID && CONSOLE_AGENT_KEY
+);
+const MAX_QUEUED_EVENTS = 2000;
+
 const deploymentStatus = new Map();
 const deploymentLogs = new Map();
 const deploymentClients = new Map();
+const deploymentEventQueue = [];
 
 const deploymentContext = new AsyncLocalStorage();
 
 let activeDeployments = 0;
+let deploymentEventWorker = null;
 
 /* -------------------- Helpers -------------------- */
 
 function getCurrentProject() {
   return deploymentContext.getStore()?.project || null;
+}
+
+function getCurrentRunId() {
+  return deploymentContext.getStore()?.runId || null;
+}
+
+function queueDeploymentEvent(event) {
+  if (!CONSOLE_EVENT_RELAY_ENABLED) return;
+
+  if (deploymentEventQueue.length >= MAX_QUEUED_EVENTS) {
+    if (event.type === 'deployment-log') return;
+    deploymentEventQueue.shift();
+  }
+
+  deploymentEventQueue.push(event);
+
+  if (!deploymentEventWorker) {
+    deploymentEventWorker = drainDeploymentEventQueue();
+  }
+}
+
+async function drainDeploymentEventQueue() {
+  try {
+    while (deploymentEventQueue.length > 0) {
+      const event = deploymentEventQueue.shift();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+
+      try {
+        const response = await fetch(`${CONSOLE_AGENT_URL}/console/events`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Console-Agent-Id': CONSOLE_AGENT_ID,
+            'X-Console-Agent-Key': CONSOLE_AGENT_KEY,
+          },
+          body: JSON.stringify(event),
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          console.error(
+            `[console-events] HTTP ${response.status} for ${event.type} ${event.projectKey}`
+          );
+        }
+      } catch (error) {
+        console.error(
+          `[console-events] Delivery failed for ${event.type} ${event.projectKey}: ${error.message}`
+        );
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+  } finally {
+    deploymentEventWorker = null;
+
+    if (deploymentEventQueue.length > 0) {
+      deploymentEventWorker = drainDeploymentEventQueue();
+    }
+  }
 }
 
 function ensureProject(project) {
@@ -156,6 +226,8 @@ function appendProjectLog(project, message) {
       clients.delete(client);
     }
   }
+
+  return entry;
 }
 
 /* -------------------- Logging -------------------- */
@@ -169,7 +241,15 @@ function log(message) {
   const project = getCurrentProject();
 
   if (project) {
-    appendProjectLog(project, message);
+    const entry = appendProjectLog(project, message);
+
+    queueDeploymentEvent({
+      type: 'deployment-log',
+      projectKey: project,
+      runId: getCurrentRunId(),
+      message,
+      timestamp: entry.timestamp,
+    });
   }
 
   const logDirectory = path.dirname(LOG_FILE);
@@ -257,29 +337,47 @@ export function runCommand(command, timeout = 900000) {
 
 /* -------------------- Deployment Runner -------------------- */
 
-async function executeDeployment(project, deployFunction) {
+async function executeDeployment(project, deployFunction, options = {}) {
   activeDeployments++;
 
-  const runId = `${project}-${Date.now()}`;
+  const runId = options.runId || `${project}-${Date.now()}`;
+  const triggerSource = options.triggerSource || 'webhook';
 
   ensureProject(project);
 
   deploymentStatus.set(project, {
     project,
     runId,
+    triggerSource,
+    branch: options.branch,
     status: 'deploying',
     startTime: new Date(),
   });
 
-  return deploymentContext.run({ project }, async () => {
+  return deploymentContext.run({ project, runId }, async () => {
+    queueDeploymentEvent({
+      type: 'deployment-started',
+      projectKey: project,
+      runId,
+      triggerSource,
+      deployerEmail: options.deployerEmail,
+      branch: options.branch,
+      commitHash: options.commitHash,
+      commitMessage: options.commitMessage,
+      timestamp: new Date().toISOString(),
+    });
+
     try {
       log(`🔄 Starting deployment for ${project}`);
 
       const success = await deployFunction();
+      const failureReason = success ? undefined : 'Deployment command failed';
 
       deploymentStatus.set(project, {
         project,
         runId,
+        triggerSource,
+        branch: options.branch,
         status: success ? 'success' : 'failed',
         completedTime: new Date(),
       });
@@ -290,17 +388,37 @@ async function executeDeployment(project, deployFunction) {
           : `❌ Deploy failed for ${project}`
       );
 
+      queueDeploymentEvent({
+        type: 'deployment-completed',
+        projectKey: project,
+        runId,
+        status: success ? 'SUCCESS' : 'FAILED',
+        failureReason,
+        timestamp: new Date().toISOString(),
+      });
+
       return success;
     } catch (error) {
       deploymentStatus.set(project, {
         project,
         runId,
+        triggerSource,
+        branch: options.branch,
         status: 'error',
         error: error.message,
         completedTime: new Date(),
       });
 
       log(`❌ Deployment error for ${project}: ${error.message}`);
+
+      queueDeploymentEvent({
+        type: 'deployment-completed',
+        projectKey: project,
+        runId,
+        status: 'ERROR',
+        failureReason: error.message,
+        timestamp: new Date().toISOString(),
+      });
 
       return false;
     } finally {
@@ -529,8 +647,21 @@ app.get('/pm2/logs/:target/stream', (req, res) => {
 
 app.post('/webhook/:project', async (req, res) => {
   const project = req.params.project;
+  const service = req.body?.service;
 
   log(`📥 Webhook received for project: ${project}`);
+
+  if (service?.projectKey && service.projectKey !== project) {
+    return res.status(400).json({
+      message: `Service project key ${service.projectKey} does not match URL project ${project}`,
+    });
+  }
+
+  if (service?.enabled === false) {
+    return res.status(409).json({
+      message: `Service ${project} is disabled`,
+    });
+  }
 
   const deployFunction = deployments[project];
 
@@ -541,13 +672,37 @@ app.post('/webhook/:project', async (req, res) => {
     });
   }
 
+  const githubBranch =
+    typeof req.body?.ref === 'string'
+      ? req.body.ref.replace(/^refs\/heads\//, '')
+      : undefined;
+  const deployerEmail =
+    typeof req.body?.requestedBy === 'string' &&
+    /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(req.body.requestedBy)
+      ? req.body.requestedBy
+      : undefined;
+  const runId =
+    typeof req.body?.runId === 'string' && req.body.runId.trim()
+      ? req.body.runId.trim().slice(0, 200)
+      : `${project}-${Date.now()}`;
+  const triggerSource = req.body?.source === 'console' ? 'console' : 'webhook';
+
   res.status(202).json({
     message: `Deployment initiated for ${project}`,
     status: 'processing',
+    project,
+    runId,
     activeDeployments,
   });
 
-  executeDeployment(project, deployFunction).catch((error) => {
+  executeDeployment(project, deployFunction, {
+    runId,
+    triggerSource,
+    deployerEmail,
+    branch: service?.branch || githubBranch,
+    commitHash: req.body?.after || req.body?.head_commit?.id,
+    commitMessage: req.body?.head_commit?.message,
+  }).catch((error) => {
     log(`💥 Unhandled deployment error: ${error.message}`);
   });
 });
@@ -578,4 +733,9 @@ app.listen(PORT, () => {
   log(`🚀 Git Pipeline server listening on port ${PORT}`);
   log(`📝 Logs written to: ${LOG_FILE}`);
   log(`⚙️ Max concurrent deployments: ${MAX_CONCURRENT_DEPLOYS}`);
+  log(
+    CONSOLE_EVENT_RELAY_ENABLED
+      ? '🔗 HexTorq console event relay enabled'
+      : '🔕 HexTorq console event relay disabled'
+  );
 });
