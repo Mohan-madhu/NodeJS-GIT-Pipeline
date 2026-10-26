@@ -1,5 +1,5 @@
 import express from 'express';
-import { exec, spawn } from 'child_process';
+import { exec, execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { AsyncLocalStorage } from 'async_hooks';
@@ -33,6 +33,17 @@ const deploymentContext = new AsyncLocalStorage();
 
 let activeDeployments = 0;
 let deploymentEventWorker = null;
+
+function readGitRevision(workingDirectory) {
+  if (!workingDirectory || !path.isAbsolute(workingDirectory)) return Promise.resolve({});
+  return new Promise((resolve) => {
+    execFile('git', ['-C', workingDirectory, 'log', '-1', '--pretty=format:%H%x00%s'], { timeout: 10000 }, (error, stdout) => {
+      if (error) return resolve({});
+      const [commitHash, commitMessage] = stdout.trim().split('\0');
+      resolve({ commitHash, commitMessage });
+    });
+  });
+}
 
 /* -------------------- Helpers -------------------- */
 
@@ -437,6 +448,7 @@ async function executeDeployment(project, deployFunction, options = {}) {
 
       const success = await deployFunction();
       const failureReason = success ? undefined : 'Deployment command failed';
+      const revision = await readGitRevision(options.workingDirectory);
 
       deploymentStatus.set(project, {
         project,
@@ -459,6 +471,9 @@ async function executeDeployment(project, deployFunction, options = {}) {
         runId,
         status: success ? 'SUCCESS' : 'FAILED',
         failureReason,
+        branch: options.branch,
+        commitHash: revision.commitHash || options.commitHash,
+        commitMessage: revision.commitMessage || options.commitMessage,
         timestamp: new Date().toISOString(),
       });
 
@@ -482,6 +497,7 @@ async function executeDeployment(project, deployFunction, options = {}) {
         runId,
         status: 'ERROR',
         failureReason: error.message,
+        branch: options.branch,
         timestamp: new Date().toISOString(),
       });
 
@@ -780,6 +796,7 @@ app.post('/webhook/:project', async (req, res) => {
     branch: serviceBranch || githubBranch,
     commitHash,
     commitMessage,
+    workingDirectory: service?.workingDirectory,
     force,
   }).catch((error) => {
     log(`💥 Unhandled deployment error: ${error.message}`);
