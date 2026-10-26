@@ -666,6 +666,12 @@ app.get('/pm2/logs/:target/stream', (req, res) => {
     res.flushHeaders();
   }
 
+  // Keep the long-lived stream open while PM2 is quiet. Comment frames are
+  // ignored by SSE clients but prevent reverse proxies from timing out.
+  const heartbeat = setInterval(() => {
+    if (!res.destroyed) res.write(': heartbeat\n\n');
+  }, 15000);
+
   sendSse(res, {
     type: 'connected',
     target,
@@ -716,6 +722,7 @@ app.get('/pm2/logs/:target/stream', (req, res) => {
   });
 
   req.on('close', () => {
+    clearInterval(heartbeat);
     pm2Process.kill('SIGTERM');
   });
 });
