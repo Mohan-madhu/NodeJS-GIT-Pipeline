@@ -686,6 +686,17 @@ app.post('/webhook/:project', async (req, res) => {
       ? req.body.runId.trim().slice(0, 200)
       : `${project}-${Date.now()}`;
   const triggerSource = req.body?.source === 'console' ? 'console' : 'webhook';
+  const serviceBranch = typeof service?.branch === 'string' ? service.branch : undefined;
+  const commitHash =
+    typeof req.body?.after === 'string'
+      ? req.body.after
+      : typeof req.body?.head_commit?.id === 'string'
+        ? req.body.head_commit.id
+        : undefined;
+  const commitMessage =
+    typeof req.body?.head_commit?.message === 'string'
+      ? req.body.head_commit.message
+      : undefined;
 
   res.status(202).json({
     message: `Deployment initiated for ${project}`,
@@ -699,9 +710,9 @@ app.post('/webhook/:project', async (req, res) => {
     runId,
     triggerSource,
     deployerEmail,
-    branch: service?.branch || githubBranch,
-    commitHash: req.body?.after || req.body?.head_commit?.id,
-    commitMessage: req.body?.head_commit?.message,
+    branch: serviceBranch || githubBranch,
+    commitHash,
+    commitMessage,
   }).catch((error) => {
     log(`💥 Unhandled deployment error: ${error.message}`);
   });
