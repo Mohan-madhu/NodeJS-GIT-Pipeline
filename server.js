@@ -271,7 +271,65 @@ function log(message) {
 
 /* -------------------- Command Runner -------------------- */
 
-export function runCommand(command, timeout = 900000) {
+function shellQuote(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
+function repositoryFromCommand(command) {
+  const match = String(command).match(/\bcd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&]+))/);
+  return match?.[1] || match?.[2] || match?.[3] || null;
+}
+
+function repositoryChangeState(workDirectory) {
+  return new Promise((resolve) => {
+    const probe = `
+      set -e
+      cd -- ${shellQuote(workDirectory)}
+      git rev-parse --git-dir >/dev/null
+      git fetch --prune origin >/dev/null 2>&1
+      branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+      if [ -z "$branch" ]; then
+        branch="$(git remote show origin 2>/dev/null | awk '/HEAD branch/ {print $NF}' || true)"
+      fi
+      if [ -z "$branch" ]; then
+        branch="$(git for-each-ref --format='%(refname:strip=3)' refs/remotes/origin | grep -v '^HEAD$' | head -n 1)"
+      fi
+      branch="$(printf '%s' "$branch" | sed 's#^origin/##')"
+      [ -n "$branch" ]
+      local_commit="$(git rev-parse HEAD)"
+      remote_commit="$(git rev-parse "origin/$branch")"
+      if [ "$local_commit" = "$remote_commit" ]; then
+        printf 'NO_CHANGES\\n'
+        exit 0
+      fi
+      files="$(git diff --name-only "$local_commit" "$remote_commit")"
+      if [ -n "$files" ] && ! printf '%s\\n' "$files" | grep -Ev '(^|/)(README([.]|$)|CHANGELOG([.]|$)|docs?/|[.]md$|[.]txt$)' | grep -q .; then
+        printf 'DOCS_ONLY\\n'
+      else
+        printf 'CHANGED\\n'
+      fi
+    `;
+    exec(probe, { shell: '/bin/bash', timeout: 30000 }, (error, stdout) => {
+      if (error) return resolve({ state: 'UNKNOWN' });
+      resolve({ state: stdout.trim().split(/\s+/)[0] || 'UNKNOWN' });
+    });
+  });
+}
+
+export async function runCommand(command, timeout = 900000) {
+  const workDirectory = repositoryFromCommand(command);
+  if (workDirectory) {
+    const decision = await repositoryChangeState(workDirectory);
+    if (decision.state === 'NO_CHANGES' || decision.state === 'DOCS_ONLY') {
+      log(
+        decision.state === 'NO_CHANGES'
+          ? `⏭️ Deployment skipped: no new commits for ${workDirectory}`
+          : `⏭️ Deployment skipped: only documentation changes for ${workDirectory}`,
+      );
+      return true;
+    }
+  }
+
   return new Promise((resolve) => {
     let resolved = false;
 
