@@ -123,6 +123,14 @@ Now, whenever you `git push` to your repository, GitHub will send a request to y
 | `GET`  | `/status/:project`          | Get deployment status for a specific project.                          |
 | `POST` | `/webhook/:project`         | Triggers the deployment script for the specified `:project`. Returns HTTP 202 (Accepted) and runs deployment asynchronously. |
 
+Normal webhooks skip when the repository has no new commits or only documentation changes. To explicitly run the complete registered deployment command, add `?force=true` (the `?hard=true` alias and JSON body flags `{"force":true}` / `{"hard":true}` are also accepted):
+
+```bash
+curl -X POST "http://localhost:7777/webhook/janahanlaw?force=true"
+```
+
+Force mode bypasses change detection; it does not alter the project's own build command or disable Docker caching unless that deployment definition already requests it.
+
 ## Key Improvements (v1.1.0+)
 
 - ✅ **Fixed duplicate webhook execution** - Deployments now run exactly once

@@ -316,9 +316,14 @@ function repositoryChangeState(workDirectory) {
   });
 }
 
+function isTruthyFlag(value) {
+  return value === true || value === 1 || value === '1' || value === 'true' || value === 'yes';
+}
+
 export async function runCommand(command, timeout = 900000) {
   const workDirectory = repositoryFromCommand(command);
-  if (workDirectory) {
+  const forceDeployment = deploymentContext.getStore()?.force === true;
+  if (workDirectory && !forceDeployment) {
     const decision = await repositoryChangeState(workDirectory);
     if (decision.state === 'NO_CHANGES' || decision.state === 'DOCS_ONLY') {
       log(
@@ -328,6 +333,8 @@ export async function runCommand(command, timeout = 900000) {
       );
       return true;
     }
+  } else if (workDirectory && forceDeployment) {
+    log(`⚡ Force deployment enabled; skipping change detection for ${workDirectory}`);
   }
 
   return new Promise((resolve) => {
@@ -412,7 +419,7 @@ async function executeDeployment(project, deployFunction, options = {}) {
     startTime: new Date(),
   });
 
-  return deploymentContext.run({ project, runId }, async () => {
+  return deploymentContext.run({ project, runId, force: options.force === true }, async () => {
     queueDeploymentEvent({
       type: 'deployment-started',
       projectKey: project,
@@ -706,6 +713,8 @@ app.get('/pm2/logs/:target/stream', (req, res) => {
 app.post('/webhook/:project', async (req, res) => {
   const project = req.params.project;
   const service = req.body?.service;
+  const force = isTruthyFlag(req.query?.force) || isTruthyFlag(req.query?.hard) ||
+    isTruthyFlag(req.body?.force) || isTruthyFlag(req.body?.hard);
 
   log(`📥 Webhook received for project: ${project}`);
 
@@ -771,6 +780,7 @@ app.post('/webhook/:project', async (req, res) => {
     branch: serviceBranch || githubBranch,
     commitHash,
     commitMessage,
+    force,
   }).catch((error) => {
     log(`💥 Unhandled deployment error: ${error.message}`);
   });
