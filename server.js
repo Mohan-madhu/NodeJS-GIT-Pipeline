@@ -679,37 +679,33 @@ app.get('/pm2/logs/:target/stream', (req, res) => {
       shell: false,
     }
   );
+  const historicalCount = { stdout: 0, stderr: 0 };
 
-  pm2Process.stdout.on('data', (data) => {
+  const sendPm2Lines = (data, stream) => {
     data
       .toString()
       .split('\n')
       .filter((line) => line.trim())
       .forEach((line) => {
+        const historical = historicalCount[stream] < lines;
+        historicalCount[stream] += 1;
         sendSse(res, {
           type: 'pm2-log',
           target,
-          stream: 'stdout',
-          timestamp: new Date().toISOString(),
+          stream,
+          live: !historical,
+          timestamp: historical ? undefined : new Date().toISOString(),
           message: line,
         });
       });
+  };
+
+  pm2Process.stdout.on('data', (data) => {
+    sendPm2Lines(data, 'stdout');
   });
 
   pm2Process.stderr.on('data', (data) => {
-    data
-      .toString()
-      .split('\n')
-      .filter((line) => line.trim())
-      .forEach((line) => {
-        sendSse(res, {
-          type: 'pm2-log',
-          target,
-          stream: 'stderr',
-          timestamp: new Date().toISOString(),
-          message: line,
-        });
-      });
+    sendPm2Lines(data, 'stderr');
   });
 
   pm2Process.on('error', (error) => {
