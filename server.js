@@ -10,6 +10,7 @@ dotenv.config();
 
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 const LOG_FILE = process.env.LOG_FILE || 'git_pipeline_deploy.log';
 const PORT = process.env.PORT || 9000;
@@ -402,6 +403,20 @@ function repositoryChangeState(workDirectory) {
 
 function isTruthyFlag(value) {
   return value === true || value === 1 || value === '1' || value === 'true' || value === 'yes';
+}
+
+function extractWebhookPayload(body) {
+  let payload = body;
+  if (typeof body?.payload === 'string') {
+    try { payload = JSON.parse(body.payload); } catch { payload = body; }
+  } else if (body?.payload && typeof body.payload === 'object') {
+    payload = body.payload;
+  }
+  return payload?.data && typeof payload.data === 'object' ? payload.data : payload;
+}
+
+function firstWebhookValue(...values) {
+  return values.find((value) => typeof value === 'string' && value.trim())?.trim();
 }
 
 export async function runCommand(command, timeout = 900000) {
@@ -857,11 +872,7 @@ app.post('/webhook/:project', async (req, res) => {
     });
   }
 
-  const webhookPayload = typeof req.body?.payload === 'string'
-    ? (() => {
-      try { return JSON.parse(req.body.payload); } catch { return req.body; }
-    })()
-    : (req.body?.payload && typeof req.body.payload === 'object' ? req.body.payload : req.body);
+  const webhookPayload = extractWebhookPayload(req.body);
   const commits = Array.isArray(webhookPayload?.commits) ? webhookPayload.commits : [];
   const headCommit = webhookPayload?.head_commit || webhookPayload?.commit || commits[commits.length - 1] || {};
   const githubBranch =
@@ -879,17 +890,23 @@ app.post('/webhook/:project', async (req, res) => {
       : `${project}-${Date.now()}`;
   const triggerSource = req.body?.source === 'console' ? 'console' : 'webhook';
   const serviceBranch = typeof service?.branch === 'string' ? service.branch : undefined;
-  const commitHash = [
+  const commitHash = firstWebhookValue(
     webhookPayload?.after,
     webhookPayload?.checkout_sha,
     headCommit.id,
     headCommit.sha,
+    webhookPayload?.object_attributes?.last_commit?.id,
+    webhookPayload?.object_attributes?.last_commit?.sha,
+    webhookPayload?.last_commit?.id,
     webhookPayload?.sha,
-  ].find((value) => typeof value === 'string' && value.trim());
-  const commitMessage = [
+  );
+  const commitMessage = firstWebhookValue(
     headCommit.message,
+    commits[commits.length - 1]?.message,
+    webhookPayload?.object_attributes?.title,
+    webhookPayload?.object_attributes?.message,
     webhookPayload?.message,
-  ].find((value) => typeof value === 'string' && value.trim());
+  );
 
   res.status(202).json({
     message: `Deployment initiated for ${project}`,
