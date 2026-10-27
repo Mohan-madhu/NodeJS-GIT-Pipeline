@@ -154,7 +154,7 @@ async function drainDeploymentEventQueue() {
           console.error(
             `[console-events] HTTP ${response.status} for ${event.type} ${event.projectKey}`
           );
-          if ((event.deliveryAttempts || 0) < 12) {
+          if (response.status >= 500 && (event.deliveryAttempts || 0) < 12) {
             const retryEvent = { ...event, deliveryAttempts: (event.deliveryAttempts || 0) + 1 };
             if (event.type === 'deployment-completed') deploymentEventQueue.unshift(retryEvent);
             else deploymentEventQueue.push(retryEvent);
