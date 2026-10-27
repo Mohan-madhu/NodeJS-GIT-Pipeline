@@ -28,11 +28,72 @@ const deploymentStatus = new Map();
 const deploymentLogs = new Map();
 const deploymentClients = new Map();
 const deploymentEventQueue = [];
+const dynamicProjectsFile = process.env.DYNAMIC_PROJECTS_FILE || path.join(process.cwd(), 'dynamic-projects.json');
+const dynamicProjects = new Map();
 
 const deploymentContext = new AsyncLocalStorage();
 
 let activeDeployments = 0;
 let deploymentEventWorker = null;
+
+function loadDynamicProjects() {
+  try {
+    const data = JSON.parse(fs.readFileSync(dynamicProjectsFile, 'utf8'));
+    for (const [project, config] of Object.entries(data)) dynamicProjects.set(project, config);
+  } catch { /* The registry is created on the first registration. */ }
+}
+
+function persistDynamicProjects() {
+  const temporaryFile = `${dynamicProjectsFile}.tmp`;
+  fs.writeFileSync(temporaryFile, JSON.stringify(Object.fromEntries(dynamicProjects), null, 2));
+  fs.renameSync(temporaryFile, dynamicProjectsFile);
+}
+
+function validProjectValue(value) {
+  return typeof value === 'string' && /^[a-zA-Z0-9_.-]+$/.test(value) && value.length <= 200;
+}
+
+function validDynamicProject(config) {
+  if (!config || !validProjectValue(config.projectKey)) return false;
+  if (!['PM2', 'STATIC_FRONTEND'].includes(config.type)) return false;
+  if (typeof config.repositoryUrl !== 'string' || !/^https:\/\/github\.com\/[^/]+\/[^/]+(?:\.git)?$/i.test(config.repositoryUrl)) return false;
+  if (typeof config.branch !== 'string' || !/^[a-zA-Z0-9_./-]+$/.test(config.branch)) return false;
+  if (typeof config.workingDirectory !== 'string' || !path.isAbsolute(config.workingDirectory)) return false;
+  if (config.type === 'PM2' && (!validProjectValue(config.pm2ProcessName) || !validProjectValue(config.deploymentKey || config.projectKey))) return false;
+  if (config.deployDirectory && (!path.isAbsolute(config.deployDirectory) || config.deployDirectory.includes('..'))) return false;
+  return true;
+}
+
+function trustedConsoleRequest(req) {
+  return CONSOLE_AGENT_ID && CONSOLE_AGENT_KEY &&
+    req.headers['x-console-agent-id'] === CONSOLE_AGENT_ID &&
+    req.headers['x-console-agent-key'] === CONSOLE_AGENT_KEY;
+}
+
+function dynamicDeployment(config) {
+  const workDirectory = shellQuote(config.workingDirectory);
+  const branch = shellQuote(config.branch);
+  const processName = config.pm2ProcessName ? shellQuote(config.pm2ProcessName) : '';
+  const outputDirectory = config.deployDirectory ? shellQuote(config.deployDirectory) : '';
+  const command = [
+    'set -Eeuo pipefail',
+    `cd ${workDirectory}`,
+    `git fetch origin ${branch}`,
+    `git checkout ${branch}`,
+    `git reset --hard origin/${branch}`,
+    'npm install',
+    'npm run build --if-present',
+  ];
+  if (config.type === 'PM2') {
+    command.push(`pm2 restart ${processName} --update-env`);
+  } else {
+    if (!outputDirectory) throw new Error('deployDirectory is required for dynamic static services');
+    command.push(`test -d dist && rsync -a --delete dist/ ${outputDirectory}/ || test -d build && rsync -a --delete build/ ${outputDirectory}/ || test -d out && rsync -a --delete out/ ${outputDirectory}/`);
+  }
+  return () => runCommand(command.join(' && '));
+}
+
+loadDynamicProjects();
 
 function readGitRevision(workingDirectory) {
   if (!workingDirectory || !path.isAbsolute(workingDirectory)) return Promise.resolve({});
@@ -729,6 +790,29 @@ app.get('/pm2/logs/:target/stream', (req, res) => {
 
 /* -------------------- Webhook -------------------- */
 
+app.post('/projects/register', (req, res) => {
+  if (!trustedConsoleRequest(req)) return res.status(401).json({ message: 'Console registration credentials required' });
+  const config = {
+    projectKey: req.body?.projectKey,
+    type: req.body?.type,
+    repositoryUrl: req.body?.repositoryUrl,
+    branch: req.body?.branch || 'main',
+    workingDirectory: req.body?.workingDirectory,
+    deployDirectory: req.body?.deployDirectory || undefined,
+    pm2ProcessName: req.body?.pm2ProcessName || undefined,
+    deploymentKey: req.body?.deploymentKey || undefined,
+  };
+  if (!validDynamicProject(config)) return res.status(400).json({ message: 'Invalid dynamic project configuration' });
+  dynamicProjects.set(config.projectKey, config);
+  try {
+    persistDynamicProjects();
+  } catch (error) {
+    dynamicProjects.delete(config.projectKey);
+    return res.status(500).json({ message: 'Unable to persist dynamic project configuration', error: error.message });
+  }
+  res.status(201).json({ registered: true, projectKey: config.projectKey });
+});
+
 app.post('/webhook/:project', async (req, res) => {
   const project = req.params.project;
   const service = req.body?.service;
@@ -749,7 +833,10 @@ app.post('/webhook/:project', async (req, res) => {
     });
   }
 
-  const deployFunction = deployments[project];
+  const dynamicProject = dynamicProjects.get(project);
+  const deployFunction = deployments[project] ||
+    (dynamicProject?.deploymentKey && deployments[dynamicProject.deploymentKey]) ||
+    (dynamicProject ? dynamicDeployment(dynamicProject) : null);
 
   if (!deployFunction) {
     return res.status(400).json({
