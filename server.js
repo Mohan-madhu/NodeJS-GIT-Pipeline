@@ -758,9 +758,16 @@ app.post('/webhook/:project', async (req, res) => {
     });
   }
 
+  const webhookPayload = typeof req.body?.payload === 'string'
+    ? (() => {
+      try { return JSON.parse(req.body.payload); } catch { return req.body; }
+    })()
+    : (req.body?.payload && typeof req.body.payload === 'object' ? req.body.payload : req.body);
+  const commits = Array.isArray(webhookPayload?.commits) ? webhookPayload.commits : [];
+  const headCommit = webhookPayload?.head_commit || webhookPayload?.commit || commits[commits.length - 1] || {};
   const githubBranch =
-    typeof req.body?.ref === 'string'
-      ? req.body.ref.replace(/^refs\/heads\//, '')
+    typeof webhookPayload?.ref === 'string'
+      ? webhookPayload.ref.replace(/^refs\/heads\//, '')
       : undefined;
   const deployerEmail =
     typeof req.body?.requestedBy === 'string' &&
@@ -773,16 +780,17 @@ app.post('/webhook/:project', async (req, res) => {
       : `${project}-${Date.now()}`;
   const triggerSource = req.body?.source === 'console' ? 'console' : 'webhook';
   const serviceBranch = typeof service?.branch === 'string' ? service.branch : undefined;
-  const commitHash =
-    typeof req.body?.after === 'string'
-      ? req.body.after
-      : typeof req.body?.head_commit?.id === 'string'
-        ? req.body.head_commit.id
-        : undefined;
-  const commitMessage =
-    typeof req.body?.head_commit?.message === 'string'
-      ? req.body.head_commit.message
-      : undefined;
+  const commitHash = [
+    webhookPayload?.after,
+    webhookPayload?.checkout_sha,
+    headCommit.id,
+    headCommit.sha,
+    webhookPayload?.sha,
+  ].find((value) => typeof value === 'string' && value.trim());
+  const commitMessage = [
+    headCommit.message,
+    webhookPayload?.message,
+  ].find((value) => typeof value === 'string' && value.trim());
 
   res.status(202).json({
     message: `Deployment initiated for ${project}`,
