@@ -154,11 +154,19 @@ async function drainDeploymentEventQueue() {
           console.error(
             `[console-events] HTTP ${response.status} for ${event.type} ${event.projectKey}`
           );
+          if ((event.deliveryAttempts || 0) < 12) {
+            deploymentEventQueue.push({ ...event, deliveryAttempts: (event.deliveryAttempts || 0) + 1 });
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+          }
         }
       } catch (error) {
         console.error(
           `[console-events] Delivery failed for ${event.type} ${event.projectKey}: ${error.message}`
         );
+        if ((event.deliveryAttempts || 0) < 12) {
+          deploymentEventQueue.push({ ...event, deliveryAttempts: (event.deliveryAttempts || 0) + 1 });
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
       } finally {
         clearTimeout(timeout);
       }
