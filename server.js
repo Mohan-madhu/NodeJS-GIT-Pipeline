@@ -155,7 +155,9 @@ async function drainDeploymentEventQueue() {
             `[console-events] HTTP ${response.status} for ${event.type} ${event.projectKey}`
           );
           if ((event.deliveryAttempts || 0) < 12) {
-            deploymentEventQueue.push({ ...event, deliveryAttempts: (event.deliveryAttempts || 0) + 1 });
+            const retryEvent = { ...event, deliveryAttempts: (event.deliveryAttempts || 0) + 1 };
+            if (event.type === 'deployment-completed') deploymentEventQueue.unshift(retryEvent);
+            else deploymentEventQueue.push(retryEvent);
             await new Promise((resolve) => setTimeout(resolve, 2000));
           }
         }
@@ -164,7 +166,9 @@ async function drainDeploymentEventQueue() {
           `[console-events] Delivery failed for ${event.type} ${event.projectKey}: ${error.message}`
         );
         if ((event.deliveryAttempts || 0) < 12) {
-          deploymentEventQueue.push({ ...event, deliveryAttempts: (event.deliveryAttempts || 0) + 1 });
+          const retryEvent = { ...event, deliveryAttempts: (event.deliveryAttempts || 0) + 1 };
+          if (event.type === 'deployment-completed') deploymentEventQueue.unshift(retryEvent);
+          else deploymentEventQueue.push(retryEvent);
           await new Promise((resolve) => setTimeout(resolve, 2000));
         }
       } finally {
