@@ -364,6 +364,11 @@ function shellQuote(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'";
 }
 
+function isGlobalPm2Output(line) {
+  const plain = String(line).replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '').trimStart();
+  return /^[┌┬┐├┼┤└┴┘│]/.test(plain) || /^host metrics\s*\|/i.test(plain);
+}
+
 function repositoryFromCommand(command) {
   const match = String(command).match(/\bcd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&]+))/);
   return match?.[1] || match?.[2] || match?.[3] || null;
@@ -481,6 +486,7 @@ export async function runCommand(command, timeout = 900000) {
         .toString()
         .split('\n')
         .filter((line) => line.trim())
+        .filter((line) => !isGlobalPm2Output(line))
         .forEach((line) => {
           log(`   [OUTPUT] ${line}`);
         });
@@ -491,6 +497,7 @@ export async function runCommand(command, timeout = 900000) {
         .toString()
         .split('\n')
         .filter((line) => line.trim())
+        .filter((line) => !isGlobalPm2Output(line))
         .forEach((line) => {
           log(`   [OUTPUT] ${line}`);
         });
