@@ -58,7 +58,7 @@ function validDynamicProject(config) {
   if (!config || !validProjectValue(config.projectKey)) return false;
   if (!['PM2', 'STATIC_FRONTEND'].includes(config.type)) return false;
   if (typeof config.repositoryUrl !== 'string' || !/^https:\/\/github\.com\/[^/]+\/[^/]+(?:\.git)?$/i.test(config.repositoryUrl)) return false;
-  if (typeof config.branch !== 'string' || !/^[a-zA-Z0-9_./-]+$/.test(config.branch)) return false;
+  if (config.branch != null && (typeof config.branch !== 'string' || !/^[a-zA-Z0-9_./-]+$/.test(config.branch))) return false;
   if (typeof config.workingDirectory !== 'string' || !path.isAbsolute(config.workingDirectory)) return false;
   if (config.type === 'PM2' && (!validProjectValue(config.pm2ProcessName) || !validProjectValue(config.deploymentKey || config.projectKey))) return false;
   if (config.deployDirectory && (!path.isAbsolute(config.deployDirectory) || config.deployDirectory.includes('..'))) return false;
@@ -73,15 +73,19 @@ function trustedConsoleRequest(req) {
 
 function dynamicDeployment(config) {
   const workDirectory = shellQuote(config.workingDirectory);
-  const branch = shellQuote(config.branch);
+  const configuredBranch = config.branch ? shellQuote(config.branch) : '';
   const processName = config.pm2ProcessName ? shellQuote(config.pm2ProcessName) : '';
   const outputDirectory = config.deployDirectory ? shellQuote(config.deployDirectory) : '';
   const command = [
     'set -Eeuo pipefail',
     `cd ${workDirectory}`,
-    `git fetch origin ${branch}`,
-    `git checkout ${branch}`,
-    `git reset --hard origin/${branch}`,
+    config.branch
+      ? `branch=${configuredBranch}`
+      : `branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)" && branch="${'${branch#origin/}'}" && if [ -z "$branch" ]; then branch="$(git remote show origin 2>/dev/null | awk '/HEAD branch/ {print $NF}' || true)"; fi && if [ -z "$branch" ]; then branch="$(git for-each-ref --format='%(refname:strip=3)' refs/remotes/origin | head -n 1)"; fi && test -n "$branch"`,
+    'echo "Deploying branch: $branch"',
+    'git fetch origin "$branch"',
+    'git checkout "$branch"',
+    'git reset --hard "origin/$branch"',
     'npm install',
     'npm run build --if-present',
   ];
@@ -365,14 +369,17 @@ function repositoryFromCommand(command) {
   return match?.[1] || match?.[2] || match?.[3] || null;
 }
 
-function repositoryChangeState(workDirectory) {
+function repositoryChangeState(workDirectory, configuredBranch) {
   return new Promise((resolve) => {
     const probe = `
       set -e
       cd -- ${shellQuote(workDirectory)}
       git rev-parse --git-dir >/dev/null
       git fetch --prune origin >/dev/null 2>&1
-      branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+       branch="${configuredBranch ? String(configuredBranch).replace(/'/g, "'\\''") : ''}"
+       if [ -z "$branch" ]; then
+         branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+       fi
       if [ -z "$branch" ]; then
         branch="$(git remote show origin 2>/dev/null | awk '/HEAD branch/ {print $NF}' || true)"
       fi
@@ -423,7 +430,8 @@ export async function runCommand(command, timeout = 900000) {
   const workDirectory = repositoryFromCommand(command);
   const forceDeployment = deploymentContext.getStore()?.force === true;
   if (workDirectory && !forceDeployment) {
-    const decision = await repositoryChangeState(workDirectory);
+    const configuredBranch = deploymentContext.getStore()?.branch;
+    const decision = await repositoryChangeState(workDirectory, configuredBranch);
     if (decision.state === 'NO_CHANGES' || decision.state === 'DOCS_ONLY') {
       log(
         decision.state === 'NO_CHANGES'
@@ -518,7 +526,7 @@ async function executeDeployment(project, deployFunction, options = {}) {
     startTime: new Date(),
   });
 
-  return deploymentContext.run({ project, runId, force: options.force === true }, async () => {
+  return deploymentContext.run({ project, runId, force: options.force === true, branch: options.branch }, async () => {
     queueDeploymentEvent({
       type: 'deployment-started',
       projectKey: project,
@@ -823,7 +831,7 @@ app.post('/projects/register', (req, res) => {
     projectKey: req.body?.projectKey,
     type: req.body?.type,
     repositoryUrl: req.body?.repositoryUrl,
-    branch: req.body?.branch || 'main',
+    branch: req.body?.branch || undefined,
     workingDirectory: req.body?.workingDirectory,
     deployDirectory: req.body?.deployDirectory || undefined,
     pm2ProcessName: req.body?.pm2ProcessName || undefined,
@@ -875,10 +883,6 @@ app.post('/webhook/:project', async (req, res) => {
   const webhookPayload = extractWebhookPayload(req.body);
   const commits = Array.isArray(webhookPayload?.commits) ? webhookPayload.commits : [];
   const headCommit = webhookPayload?.head_commit || webhookPayload?.commit || commits[commits.length - 1] || {};
-  const githubBranch =
-    typeof webhookPayload?.ref === 'string'
-      ? webhookPayload.ref.replace(/^refs\/heads\//, '')
-      : undefined;
   const deployerEmail =
     typeof req.body?.requestedBy === 'string' &&
     /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(req.body.requestedBy)
@@ -920,7 +924,9 @@ app.post('/webhook/:project', async (req, res) => {
     runId,
     triggerSource,
     deployerEmail,
-    branch: serviceBranch || githubBranch,
+    // A webhook ref is metadata only. Deployment selection comes from the
+    // explicitly registered service branch, or from origin/HEAD when omitted.
+    branch: serviceBranch || dynamicProject?.branch,
     commitHash,
     commitMessage,
     workingDirectory: service?.workingDirectory,
