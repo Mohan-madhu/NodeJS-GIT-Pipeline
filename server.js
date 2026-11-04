@@ -446,12 +446,17 @@ export async function runCommand(command, timeout = 900000) {
 
   return new Promise((resolve) => {
     let resolved = false;
+    const configuredBranch = deploymentContext.getStore()?.branch;
 
     const process = exec(
       command,
       {
         maxBuffer: 10 * 1024 * 1024,
         shell: '/bin/bash',
+        env: {
+          ...globalThis.process.env,
+          DEPLOY_BRANCH: configuredBranch || '',
+        },
       },
       (error) => {
         if (resolved) return;
