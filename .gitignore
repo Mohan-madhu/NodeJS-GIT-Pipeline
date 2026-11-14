@@ -138,5 +138,14 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
-# Per-user deployment commands (see .deployments.js for the template)
-deployments.js
+# Deployment commands live in deployments.js and are tracked in Git so that a
+# rebuilt server can restore them with a plain `git pull`.
+# Local copies and dated backups of that file are ignored.
+deployments copy*.js
+deployments.js.before-*
+deployments.js.bak-*
+deployments.js.bak
+server.js.bak-*
+dynamic-projects.json
+dynamic-projects.json.before-*
+dynamic-projects.json.bak-*

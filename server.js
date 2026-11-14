@@ -60,7 +60,7 @@ function validDynamicProject(config) {
   if (typeof config.repositoryUrl !== 'string' || !/^https:\/\/github\.com\/[^/]+\/[^/]+(?:\.git)?$/i.test(config.repositoryUrl)) return false;
   if (config.branch != null && (typeof config.branch !== 'string' || !/^[a-zA-Z0-9_./-]+$/.test(config.branch))) return false;
   if (typeof config.workingDirectory !== 'string' || !path.isAbsolute(config.workingDirectory)) return false;
-  if (config.type === 'PM2' && (!validProjectValue(config.pm2ProcessName) || !validProjectValue(config.deploymentKey || config.projectKey))) return false;
+  if (config.type === 'PM2' && ((!validProjectValue(config.pm2ProcessName) && !(Array.isArray(config.pm2ProcessNames) && config.pm2ProcessNames.length > 0 && config.pm2ProcessNames.every(validProjectValue))) || !validProjectValue(config.deploymentKey || config.projectKey))) return false;
   if (config.deployDirectory && (!path.isAbsolute(config.deployDirectory) || config.deployDirectory.includes('..'))) return false;
   return true;
 }
@@ -74,7 +74,7 @@ function trustedConsoleRequest(req) {
 function dynamicDeployment(config) {
   const workDirectory = shellQuote(config.workingDirectory);
   const configuredBranch = config.branch ? shellQuote(config.branch) : '';
-  const processName = config.pm2ProcessName ? shellQuote(config.pm2ProcessName) : '';
+  const processNames = (config.pm2ProcessNames || [config.pm2ProcessName]).filter(Boolean).map(shellQuote).join(' ');
   const outputDirectory = config.deployDirectory ? shellQuote(config.deployDirectory) : '';
   const command = [
     'set -Eeuo pipefail',
@@ -87,10 +87,17 @@ function dynamicDeployment(config) {
     'git checkout "$branch"',
     'git reset --hard "origin/$branch"',
     'npm install',
-    'npm run build --if-present',
   ];
+  if (config.projectKey === 'Brightloop_Subscription_Management') {
+    command.push(
+      'npm run prisma:generate --workspace=@brightloop/api',
+      'npm run build --workspace=@brightloop/web'
+    );
+  } else {
+    command.push('npm run build --if-present');
+  }
   if (config.type === 'PM2') {
-    command.push(`pm2 restart ${processName} --update-env`);
+    command.push(`pm2 restart ${processNames}`);
   } else {
     if (!outputDirectory) throw new Error('deployDirectory is required for dynamic static services');
     command.push(`test -d dist && rsync -a --delete dist/ ${outputDirectory}/ || test -d build && rsync -a --delete build/ ${outputDirectory}/ || test -d out && rsync -a --delete out/ ${outputDirectory}/`);
