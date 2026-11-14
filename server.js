@@ -380,7 +380,6 @@ function repositoryChangeState(workDirectory, configuredBranch) {
       set -e
       cd -- ${shellQuote(workDirectory)}
       git rev-parse --git-dir >/dev/null
-      git fetch --prune origin >/dev/null 2>&1
        branch="${configuredBranch ? String(configuredBranch).replace(/'/g, "'\\''") : ''}"
        if [ -z "$branch" ]; then
          branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
@@ -393,8 +392,13 @@ function repositoryChangeState(workDirectory, configuredBranch) {
       fi
       branch="$(printf '%s' "$branch" | sed 's#^origin/##')"
       [ -n "$branch" ]
+      # Fetch the resolved branch into its own tracking ref. Some repositories
+      # use a narrow fetch refspec, which leaves origin/<branch> missing and
+      # makes every later comparison fail.
+      git fetch --prune origin >/dev/null 2>&1 || true
+      git fetch origin "+refs/heads/\${branch}:refs/remotes/origin/\${branch}" >/dev/null 2>&1 || true
       local_commit="$(git rev-parse HEAD)"
-      remote_commit="$(git rev-parse "origin/$branch")"
+      remote_commit="$(git rev-parse "refs/remotes/origin/\${branch}" 2>/dev/null || git rev-parse FETCH_HEAD)"
       if [ "$local_commit" = "$remote_commit" ]; then
         printf 'NO_CHANGES\\n'
         exit 0
