@@ -795,7 +795,7 @@ async function Rathinam_Power_Tracker_Backend() {
     set -e
     umask 0002
     cd "${WORK_DIR}"
-    if [ -f .env ]; then eval "$(/home/mohan/.config/htop/mohan/MANAGEMENT/NodeJS-GIT-Pipeline/load-dotenv.sh .env)"; fi
+    if [ -f .env ]; then eval "$(sh /home/mohan/.config/htop/mohan/MANAGEMENT/NodeJS-GIT-Pipeline/load-dotenv.sh .env)"; fi
     ${GIT_DEFAULT_BRANCH}
     find . -maxdepth 1 -type f -name '.env*' -exec chmod 600 {} + 2>/dev/null || true
     DB_NAME="$(awk -F= '$1=="DB_NAME" {print $2}' .env)"
@@ -850,7 +850,7 @@ async function Rathinam_Maintenance_Backend() {
     set -e
     umask 0002
     cd "${WORK_DIR}"
-    if [ -f .env ]; then eval "$(/home/mohan/.config/htop/mohan/MANAGEMENT/NodeJS-GIT-Pipeline/load-dotenv.sh .env)"; fi
+    if [ -f .env ]; then eval "$(sh /home/mohan/.config/htop/mohan/MANAGEMENT/NodeJS-GIT-Pipeline/load-dotenv.sh .env)"; fi
     ${GIT_DEFAULT_BRANCH}
     find . -maxdepth 1 -type f -name '.env*' -exec chmod 600 {} + 2>/dev/null || true
     venv/bin/pip install -r requirements.txt
@@ -895,7 +895,7 @@ async function Rathinam_Transport_Backend() {
     set -e
     umask 0002
     cd "${WORK_DIR}"
-    if [ -f .env ]; then eval "$(/home/mohan/.config/htop/mohan/MANAGEMENT/NodeJS-GIT-Pipeline/load-dotenv.sh .env)"; fi
+    if [ -f .env ]; then eval "$(sh /home/mohan/.config/htop/mohan/MANAGEMENT/NodeJS-GIT-Pipeline/load-dotenv.sh .env)"; fi
     ${GIT_DEFAULT_BRANCH}
     find . -maxdepth 1 -type f -name '.env*' -exec chmod 600 {} + 2>/dev/null || true
     venv/bin/pip install -r requirements.txt
@@ -940,8 +940,8 @@ async function Rathinam_Food_Tracker_Backend() {
     set -e
     umask 0002
     cd "${WORK_DIR}"
-    if [ -f .env ]; then eval "$(/home/mohan/.config/htop/mohan/MANAGEMENT/NodeJS-GIT-Pipeline/load-dotenv.sh .env)"; fi
-    if [ -f .env.vps ]; then eval "$(/home/mohan/.config/htop/mohan/MANAGEMENT/NodeJS-GIT-Pipeline/load-dotenv.sh .env.vps)"; fi
+    if [ -f .env ]; then eval "$(sh /home/mohan/.config/htop/mohan/MANAGEMENT/NodeJS-GIT-Pipeline/load-dotenv.sh .env)"; fi
+    if [ -f .env.vps ]; then eval "$(sh /home/mohan/.config/htop/mohan/MANAGEMENT/NodeJS-GIT-Pipeline/load-dotenv.sh .env.vps)"; fi
     ${GIT_DEFAULT_BRANCH}
     find . -maxdepth 1 -type f -name '.env*' -exec chmod 600 {} + 2>/dev/null || true
     venv/bin/pip install -r requirements.txt

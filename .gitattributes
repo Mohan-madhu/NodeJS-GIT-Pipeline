@@ -1,0 +1,5 @@
+# Shell scripts must keep LF endings and their executable bit on Linux.
+# Without this a Windows checkout can strip the mode and a CRLF copy makes
+# /bin/sh fail, which silently breaks anything the script exports.
+*.sh text eol=lf
+load-dotenv.sh text eol=lf
