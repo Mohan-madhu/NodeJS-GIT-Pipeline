@@ -54,6 +54,14 @@ function validProjectValue(value) {
   return typeof value === 'string' && /^[a-zA-Z0-9_.-]+$/.test(value) && value.length <= 200;
 }
 
+function validCommandList(value) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 10) return false;
+  return value.every((command) =>
+    typeof command === 'string' && command.length > 0 && command.length <= 400 &&
+    !/[;&|`$(){}<>]/.test(command.replace(/\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/g, '')),
+  );
+}
+
 function validDynamicProject(config) {
   if (!config || !validProjectValue(config.projectKey)) return false;
   if (!['PM2', 'STATIC_FRONTEND'].includes(config.type)) return false;
@@ -62,6 +70,8 @@ function validDynamicProject(config) {
   if (typeof config.workingDirectory !== 'string' || !path.isAbsolute(config.workingDirectory)) return false;
   if (config.type === 'PM2' && ((!validProjectValue(config.pm2ProcessName) && !(Array.isArray(config.pm2ProcessNames) && config.pm2ProcessNames.length > 0 && config.pm2ProcessNames.every(validProjectValue))) || !validProjectValue(config.deploymentKey || config.projectKey))) return false;
   if (config.deployDirectory && (!path.isAbsolute(config.deployDirectory) || config.deployDirectory.includes('..'))) return false;
+  if (config.installCommands != null && !validCommandList(config.installCommands)) return false;
+  if (config.buildCommands != null && !validCommandList(config.buildCommands)) return false;
   return true;
 }
 
@@ -86,16 +96,9 @@ function dynamicDeployment(config) {
     'git fetch origin "$branch"',
     'git checkout "$branch"',
     'git reset --hard "origin/$branch"',
-    'npm install',
+    ...(config.installCommands || ['npm install']),
+    ...(config.buildCommands || ['npm run build --if-present']),
   ];
-  if (config.projectKey === 'Brightloop_Subscription_Management') {
-    command.push(
-      'npm run prisma:generate --workspace=@brightloop/api',
-      'npm run build --workspace=@brightloop/web'
-    );
-  } else {
-    command.push('npm run build --if-present');
-  }
   if (config.type === 'PM2') {
     command.push(`pm2 restart ${processNames}`);
   } else {
@@ -858,6 +861,11 @@ app.post('/projects/register', (req, res) => {
     workingDirectory: req.body?.workingDirectory,
     deployDirectory: req.body?.deployDirectory || undefined,
     pm2ProcessName: req.body?.pm2ProcessName || undefined,
+    pm2ProcessNames: Array.isArray(req.body?.pm2ProcessNames) && req.body.pm2ProcessNames.length
+      ? req.body.pm2ProcessNames
+      : undefined,
+    installCommands: Array.isArray(req.body?.installCommands) ? req.body.installCommands : undefined,
+    buildCommands: Array.isArray(req.body?.buildCommands) ? req.body.buildCommands : undefined,
     deploymentKey: req.body?.deploymentKey || undefined,
   };
   if (!validDynamicProject(config)) return res.status(400).json({ message: 'Invalid dynamic project configuration' });

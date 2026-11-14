@@ -138,13 +138,21 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
-# Deployment commands live in deployments.js and are tracked in Git so that a
-# rebuilt server can restore them with a plain `git pull`.
-# Local copies and dated backups of that file are ignored.
+# Per-server deployment commands.
+#
+# deployments.js holds the commands for THIS server only: absolute paths, PM2
+# process names and which services live here. Several servers run the same
+# shared `main` branch, so this file must never be tracked - one server
+# pushing its own copy would overwrite another server's configuration on its
+# next `git pull`.
+#
+# The reusable building blocks live in tracked modules instead (branch.js for
+# branch resolution, load-dotenv.sh for env loading). Each server imports
+# those and keeps only its own commands here.
+deployments.js
 deployments copy*.js
 deployments.js.before-*
 deployments.js.bak-*
-deployments.js.bak
 server.js.bak-*
 dynamic-projects.json
 dynamic-projects.json.before-*
